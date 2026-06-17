@@ -32,6 +32,66 @@ generate_secret() {
   fi
 }
 
+is_port_in_use() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnH "sport = :${port}" 2>/dev/null | grep -q .
+    return
+  fi
+
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -tln 2>/dev/null | grep -q ":${port} "
+    return
+  fi
+
+  return 1
+}
+
+pick_free_port() {
+  local port="$1"
+  local max="$2"
+  local candidate="$port"
+
+  while [ "$candidate" -le "$max" ]; do
+    if ! is_port_in_use "$candidate"; then
+      echo "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+
+  err "No free port found between ${port} and ${max}."
+  exit 1
+}
+
+prompt_host_port() {
+  local var_name="$1"
+  local description="$2"
+  local preferred="$3"
+  local free
+  local chosen
+  local current
+
+  free="$(pick_free_port "$preferred" $((preferred + 100)))"
+
+  if [ "$free" != "$preferred" ]; then
+    warn "Port ${preferred} is already in use on this host."
+    ok "    Suggested free port: ${free}"
+  fi
+
+  prompt_value "$var_name" "$description" "$free" false false
+  chosen="${!var_name}"
+
+  while is_port_in_use "$chosen"; do
+    warn "Port ${chosen} is already in use."
+    chosen="$(pick_free_port "$((chosen + 1))" $((chosen + 100)))"
+    ok "    Using port ${chosen} instead."
+  done
+
+  printf -v "$var_name" '%s' "$chosen"
+}
+
 prompt_value() {
   local key="$1"
   local description="$2"
@@ -153,14 +213,14 @@ main() {
   DEFAULT_WEBHOOK_SECRET="$(generate_secret)"
   prompt_value WEBHOOK_SECRET "Webhook secret (random string)" "$DEFAULT_WEBHOOK_SECRET" true true
   prompt_value WEBHOOK_PATH "Webhook path" "/webhook" false false
-  prompt_value PORT "Application port" "4444" false false
+  prompt_host_port PORT "Application port (host)" 4444
 
   # --- Database ---
   if [[ "$USE_DOCKER_INFRA" =~ ^[Yy]$ ]]; then
     prompt_value POSTGRES_USER "PostgreSQL username" "panelout" true false
     prompt_value POSTGRES_PASSWORD "PostgreSQL password" "$(generate_secret)" true true
     prompt_value POSTGRES_DB "PostgreSQL database name" "panelout" true false
-    prompt_value POSTGRES_PORT "PostgreSQL host port" "5432" false false
+    prompt_host_port POSTGRES_PORT "PostgreSQL host port (external access)" 5432
     DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public"
     ok "    DATABASE_URL set for Docker network: postgres:5432"
   else
@@ -173,7 +233,7 @@ main() {
 
   # --- Redis ---
   if [[ "$USE_DOCKER_INFRA" =~ ^[Yy]$ ]]; then
-    prompt_value REDIS_PORT "Redis host port" "6379" false false
+    prompt_host_port REDIS_PORT "Redis host port (external access)" 6379
     REDIS_URL="redis://redis:6379"
     ok "    REDIS_URL set for Docker network: redis:6379"
   else
@@ -203,7 +263,7 @@ main() {
   prompt_value PASARGUARD_MAX_RETRIES "PasarGuard max retries" "3" false false
 
   # --- Tools ---
-  prompt_value ADMINER_PORT "Adminer port (tools profile only)" "8080" false false
+  prompt_host_port ADMINER_PORT "Adminer port (tools profile only)" 8080
 
   echo ""
   warn "Writing .env file..."
@@ -241,8 +301,10 @@ main() {
   echo "  Webhook:   ${WEBHOOK_URL}${WEBHOOK_PATH}"
   echo "  FAQ page:  ${WEBHOOK_URL}/faq"
   echo "  App port:  ${PORT}"
+  echo "  Postgres:  host port ${POSTGRES_PORT} (container internal: 5432)"
+  echo "  Redis:     host port ${REDIS_PORT} (container internal: 6379)"
   echo "  Database:  ${DATABASE_URL}"
-  echo "  Redis:     ${REDIS_URL}"
+  echo "  Redis URL: ${REDIS_URL}"
   echo ""
   echo "  Live logs: ${COMPOSE_CMD[*]} logs -f app"
   echo "  Stop:      ${COMPOSE_CMD[*]} down"
