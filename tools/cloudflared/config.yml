@@ -1,0 +1,7 @@
+tunnel: 5fe8ff59-7ebe-48c9-b731-fec3fa4a40fb
+credentials-file: panelout.json
+
+ingress:
+  - hostname: pnlout.mirall.ir
+    service: http://127.0.0.1:4444
+  - service: http_status:404
